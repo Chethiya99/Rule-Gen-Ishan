@@ -1,8 +1,8 @@
-streamlit==1.35.0
-openai==1.35.3
-requests==2.31.0
-pandas==2.2.2
-numpy==1.26.4
-python-dotenv==1.0.1
-pydantic==2.7.1
-uuid==1.30
+streamlit
+openai
+requests
+pandas
+numpy
+python-dotenv
+pydantic
+uuid
