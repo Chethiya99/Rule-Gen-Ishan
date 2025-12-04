@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pandas
+numpy
+scikit-learn
+openai
+python-dotenv
+python-dotenv
+kneed
