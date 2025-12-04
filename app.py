@@ -7,8 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import openai
-import time
-from collections import defaultdict
+import re
 
 # Page configuration
 st.set_page_config(
@@ -39,6 +38,10 @@ if 'awaiting_confirmation' not in st.session_state:
     st.session_state.awaiting_confirmation = False
 if 'logical_options' not in st.session_state:
     st.session_state.logical_options = []
+if 'selected_option' not in st.session_state:
+    st.session_state.selected_option = None
+if 'show_structure_options' not in st.session_state:
+    st.session_state.show_structure_options = False
 
 # Get secrets from Streamlit secrets
 def get_secrets():
@@ -59,6 +62,53 @@ try:
 except Exception as e:
     st.error(f"Failed to initialize OpenAI client: {str(e)}")
     client = None
+
+# ---------- Helper Functions ----------
+def parse_logical_options(logical_structure: str) -> List[str]:
+    """Parse logical structure string to extract multiple options"""
+    options = []
+    
+    # Check if it's multiple options format
+    if "Option 1:" in logical_structure:
+        # Split by "Option X:" pattern
+        pattern = r'Option \d+:'
+        parts = re.split(pattern, logical_structure)
+        
+        for i, part in enumerate(parts[1:], 1):  # Skip first empty part
+            option_text = f"Option {i}: {part.strip()}"
+            # Clean up the option text
+            option_text = option_text.replace('\\n', ' ').replace('\n', ' ').strip()
+            options.append(option_text)
+    
+    # If not in Option X format, check for numbered options
+    elif "1." in logical_structure or "2." in logical_structure:
+        lines = logical_structure.split('\n')
+        for line in lines:
+            line = line.strip()
+            if re.match(r'^\d+[\.\)]', line):
+                options.append(line)
+    
+    # If single structure
+    else:
+        options = [logical_structure.strip()]
+    
+    # Clean up options
+    cleaned_options = []
+    for opt in options:
+        # Remove any trailing connector text
+        opt = re.sub(r'\s*(Do you agree with any of this structure.*)', '', opt)
+        opt = opt.strip()
+        if opt:
+            cleaned_options.append(opt)
+    
+    return cleaned_options if cleaned_options else [logical_structure]
+
+def extract_last_user_message():
+    """Extract the last user message from chat history"""
+    for msg in reversed(st.session_state.chat_history):
+        if msg["role"] == "user":
+            return msg["content"]
+    return None
 
 # ---------- Visualization Functions ----------
 def create_rule_visualization(rules_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -106,7 +156,7 @@ def create_rule_visualization(rules_data: Dict[str, Any]) -> Dict[str, Any]:
     visualization = {
         "rules": [],
         "topLevelConnector": rules_data.get("topLevelConnector", "AND"),
-        "logical_structure": rules_data.get("logical_structure", "")
+        "logical_structure": st.session_state.confirmed_structure or ""
     }
     
     for rule in rules_data.get("rules", []):
@@ -118,10 +168,9 @@ def create_rule_visualization(rules_data: Dict[str, Any]) -> Dict[str, Any]:
 def display_condition(condition_data: Dict[str, Any], container):
     """Display a single condition in the UI"""
     with container:
-        col1, col2, col3, col4, col5 = st.columns([2, 2, 1, 1, 2])
+        cols = st.columns([2, 2, 1, 1, 2])
         
-        with col1:
-            # Data source dropdown (read-only)
+        with cols[0]:
             st.selectbox(
                 "Data Source",
                 [condition_data["dataSource"]],
@@ -130,8 +179,7 @@ def display_condition(condition_data: Dict[str, Any], container):
                 label_visibility="collapsed"
             )
         
-        with col2:
-            # Field dropdown (read-only)
+        with cols[1]:
             st.selectbox(
                 "Field",
                 [condition_data["field"]],
@@ -140,27 +188,17 @@ def display_condition(condition_data: Dict[str, Any], container):
                 label_visibility="collapsed"
             )
         
-        with col3:
-            # Eligibility period (read-only)
-            if condition_data["eligibilityPeriod"] != "n_a":
-                st.text_input(
-                    "Period",
-                    value=condition_data["eligibilityPeriod"],
-                    key=f"period_{condition_data['id']}",
-                    disabled=True,
-                    label_visibility="collapsed"
-                )
-            else:
-                st.text_input(
-                    "Period",
-                    value="N/A",
-                    key=f"period_{condition_data['id']}",
-                    disabled=True,
-                    label_visibility="collapsed"
-                )
+        with cols[2]:
+            period_value = condition_data["eligibilityPeriod"] if condition_data["eligibilityPeriod"] != "n_a" else "N/A"
+            st.text_input(
+                "Period",
+                value=period_value,
+                key=f"period_{condition_data['id']}",
+                disabled=True,
+                label_visibility="collapsed"
+            )
         
-        with col4:
-            # Function (read-only)
+        with cols[3]:
             func_map = {
                 "n_a": "N/A",
                 "sum": "Sum",
@@ -178,8 +216,7 @@ def display_condition(condition_data: Dict[str, Any], container):
                 label_visibility="collapsed"
             )
         
-        with col5:
-            # Operator and value
+        with cols[4]:
             op_col, val_col = st.columns(2)
             with op_col:
                 op_map = {
@@ -211,35 +248,30 @@ def display_condition(condition_data: Dict[str, Any], container):
 def display_condition_group(group_data: Dict[str, Any], container, level=0):
     """Display a condition group in the UI"""
     with container:
-        # Group header
         indent = "  " * level
         group_title = f"{indent}Condition Group ({group_data['group_connector']})"
         
         with st.expander(group_title, expanded=True):
-            # Display conditions in this group
             for i, condition in enumerate(group_data["conditions"]):
                 if condition["type"] == "group":
-                    # Nested group
                     display_condition_group(condition, st.container(), level + 1)
                 else:
-                    # Individual condition
                     display_condition(condition, st.container())
                 
-                # Show connector between conditions (except last one)
                 if i < len(group_data["conditions"]) - 1:
-                    connector = group_data["group_connector"]
-                    st.markdown(f"<div style='margin-left: {20 * (level + 1)}px; color: #666; font-style: italic;'>{connector}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='margin-left: {20 * (level + 1)}px; color: #666;'><i>{group_data['group_connector']}</i></div>", 
+                              unsafe_allow_html=True)
 
 def display_rule_visualization(visualization_data: Dict[str, Any]):
     """Main function to display the rule visualization"""
     
     st.markdown("---")
-    st.subheader("📋 Rule Structure")
+    st.subheader("📋 Generated Rule Structure")
     
-    # Display logical structure if available
-    if visualization_data.get("logical_structure"):
-        with st.expander("Logical Structure", expanded=True):
-            st.info(visualization_data["logical_structure"])
+    # Display confirmed logical structure
+    if st.session_state.confirmed_structure:
+        with st.expander("✅ Confirmed Logical Structure", expanded=True):
+            st.success(st.session_state.confirmed_structure)
     
     # Display top-level rules
     for i, rule in enumerate(visualization_data["rules"]):
@@ -248,29 +280,32 @@ def display_rule_visualization(visualization_data: Dict[str, Any]):
         else:
             display_condition(rule, st.container())
         
-        # Show connector between top-level rules (except last one)
         if i < len(visualization_data["rules"]) - 1:
             connector = visualization_data.get("topLevelConnector", "AND")
-            st.markdown(f"<div style='color: #666; font-style: italic; margin: 10px 0;'>{connector}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='color: #666; margin: 10px 0;'><i>{connector}</i></div>", 
+                      unsafe_allow_html=True)
     
     # Action buttons
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("📋 Copy Rule JSON", use_container_width=True):
+        if st.button("📋 Copy Rule JSON", use_container_width=True, key="copy_json"):
             rule_json = json.dumps(st.session_state.last_generated_rule, indent=2)
             st.code(rule_json)
             st.success("Rule JSON copied to clipboard!")
     
     with col2:
-        if st.button("📊 Generate Sample Data", use_container_width=True):
+        if st.button("📊 Generate Sample Data", use_container_width=True, key="gen_data"):
             st.session_state.show_synthetic_data = True
             st.rerun()
     
     with col3:
-        if st.button("🔄 Edit Rule", use_container_width=True):
-            st.info("Edit functionality coming soon!")
+        if st.button("🔄 Start New Rule", use_container_width=True, key="new_rule"):
+            st.session_state.last_generated_rule = None
+            st.session_state.rule_visualization = None
+            st.session_state.show_synthetic_data = False
+            st.rerun()
 
-# ---------- External API Functions (same as before) ----------
+# ---------- External API Functions ----------
 def convert_static_to_rich_format(static_data: Dict[str, List[str]]) -> Dict[str, List[Dict[str, str]]]:
     rich_format = {}
     for source_name, fields in static_data.items():
@@ -398,7 +433,9 @@ def detect_response_type(parsed_json: Dict[str, Any]) -> str:
     else:
         return "unknown"
 
-def generate_rule_with_openai(user_input: str, client_id: Optional[int] = None, generate_synthetic_data: bool = False):
+def generate_rule_with_openai(user_input: str, client_id: Optional[int] = None, context: str = ""):
+    """Generate rule using OpenAI with optional context"""
+    
     # Fetch data sources
     data_sources = fetch_data_sources(client_id or secrets['default_client_id'])
     
@@ -427,139 +464,57 @@ def generate_rule_with_openai(user_input: str, client_id: Optional[int] = None, 
     
     current_date = datetime.today().strftime("%Y-%m-%d")
     
-    system_prompt = f"""You are a rule generation assistant. Create rules based on this confirmed logical structure:
+    # Add context if provided (for re-generating with confirmed structure)
+    full_prompt = user_input
+    if context:
+        full_prompt = f"{user_input}\n\nContext: {context}"
+    
+    system_prompt = f"""You are a rule generation assistant. Create rules based on logical structures.
 
-        You mostly generate 3 things. 
-        1. Logical structures
-        2. Rule
-        3. General message
+    You generate 3 types of responses:
+    1. Logical structure options (for user confirmation)
+    2. Complete rule JSON (after confirmation)
+    3. General messages
 
-        ### Core Responsibilities - Rule Generation:
-        # Logical Structure Handling
-        1. When the request contains ONLY AND operators or ONLY OR operators:
-           - Generate the single correct logical structure without giving options to select.
-           - Present it to the user for confirmation
+    ### When user provides a rule description:
+    1. If it contains ONLY AND or ONLY OR operators:
+       - Generate ONE logical structure
+       - Ask for confirmation
+    
+    2. If it contains MIXED AND/OR operators:
+       - Generate 3 possible logical structures
+       - Number them as Option 1, Option 2, Option 3
+       - Ask user to choose one
 
-        2. When the request contains a MIX of AND/OR operators:
-           - MUST propose ALL possible logical structures (typically 3 options)
-           - Present them as clearly numbered options (Option 1, Option 2, Option 3)
+    ### After user confirms a structure:
+    - Generate the complete rule JSON
+    - Use ONLY the fields from available data sources
+    - Include fieldId and dataSourceId from mapping
 
-        For before generate the rule you will be given a logical structure(s) and get the confirmation of the logical structure. (YES or NO)
+    Available data sources:
+    {available_data}
 
-        ### Your Flow before generating the rule:
-        1. Before generating the rule, you will be given a logical structure.
-        2. and you have to ask confirmation of the logical structure with Yes or No. simple question
-        3. if the user says yes, then you will generate the rule.
-        4. if the user says no, then you will suggest another boolean logical structure for it.
-        5. after confirming you will generate the rule
+    Field Mapping:
+    {field_mapping_str}
 
-        ### While generating the rule dont add any explanation just generate the rule with ONLY JSON output.
-
-        OUTPUT confirmation message format When the request contains ONLY AND operators or ONLY OR operators
-        {{
-            "message": "Logical structure confirmed",
-            "logical_structure": "(Customer spends over $2500 on a credit card in a month) AND (has an active mortgage) AND (loan balance is more than $1000)",
-            "user_message": "Do you agree with this structure, please suggest your requirement (agree or suggest another structure)"
-        }}       
-
-        OUTPUT confirmation message format When the request contains a MIX of AND/OR operators:
-        {{
-            "message": "Logical structure confirmed",
-            "logical_structure": "Option 1: (Customer spends over $2500 on a credit card in a month) OR (has an active mortgage AND loan balance is more than $1000),
-                Option 2: Customer spends over $2500 on a credit card in a month OR (has an active mortgage AND loan balance is more than $1000),
-                Option 3: (Customer spends over $2500 on a credit card in a month OR has an active mortgage) AND loan balance is more than $1000",
-            "user_message": "Do you agree with any of this structure, please suggest your requirement (agree or suggest another structure)"
-        }}
-
-        OUTPUT general message format
-        {{
-            "message": <general response message for other messages and any general message>,
-        }}  
-
-        If it is (A AND B) OR C, Output JSON matching this type of schema:
-        {{
-            "rules": [
-                {{
-                    "id": <id>,
-                    "priority": null,
-                    "ruleType": "conditionGroup",
-                    "conditions": [
-                        {{
-                            "id": <id>,
-                            "dataSource": <data source name>,
-                            "dataSourceId": <data source id>,
-                            "field": <field name>,
-                            "fieldId": <field id>,
-                            "eligibilityPeriod": "Rolling 30 days",
-                            "function": <function>,
-                            "operator": <operator>,
-                            "value": "2500",
-                            "connector": "AND"
-                        }},
-                        {{
-                            "id": <id>,
-                            "dataSource": <data source name>,
-                            "dataSourceId": <data source id>,
-                            "field": <field name>,
-                            "fieldId": <field id>,
-                            "eligibilityPeriod": "n_a",
-                            "function": "n_a",
-                            "operator": <operator>,
-                            "value": "1000"
-                        }}
-                    ],
-                    "connector": "OR"
-                }},
-                {{
-                    "id": <id>,
-                    "dataSource": <data source name>,
-                    "dataSourceId": <data source id>,
-                    "field": <field name>,
-                    "fieldId": <field id>,
-                    "eligibilityPeriod": "n_a",
-                    "function": "n_a",
-                    "operator": <operator>,
-                    "value": "active",
-                    "priority": null,
-                    "ruleType": "condition"
-                }}
-            ]
-        }}
-
-        CRITICAL INSTRUCTIONS:
-        1. Use ONLY the exact column names from these data sources
-        2. Use the exact fieldId from the field mapping above for each field
-        3. Use the exact dataSourceId from the available data sources for each data source
-        4. Use ONLY the operator VALUES (e.g., ">" -> "greater_than", "=" -> "equal")
-        5. Use ONLY the function VALUES (e.g., "sum" -> "sum", "count" -> "count", "N/A" -> "n_a")
-        6. Follow the logical structure EXACTLY as provided
-
-        available data sources:
-        {available_data}
-
-        Field Mapping:
-        {field_mapping_str}
-        """
+    Respond ONLY in JSON format.
+    """
     
     try:
-        # Build messages array
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_input}
+            {"role": "user", "content": full_prompt}
         ]
         
         response = client.chat.completions.create(
             model="gpt-4o-2024-08-06",
             messages=messages,
-            temperature=0.5,
+            temperature=0.3,  # Lower temperature for more consistent structure
             response_format={"type": "json_object"}
         )
         
         response_content = response.choices[0].message.content
-        
-        # Extract JSON from response
-        json_str = response_content[response_content.find('{'):response_content.rfind('}')+1]
-        json_response = json.loads(json_str)
+        json_response = json.loads(response_content)
         
         # Post-process to add fieldId if missing
         if "rules" in json_response:
@@ -588,6 +543,339 @@ def generate_rule_with_openai(user_input: str, client_id: Optional[int] = None, 
         st.error(f"Error generating rule with OpenAI: {str(e)}")
         return {"message": f"Error: {str(e)}"}
 
+def generate_confirmed_rule():
+    """Generate rule based on confirmed logical structure"""
+    with st.spinner("Generating rule based on confirmed structure..."):
+        try:
+            last_user_message = extract_last_user_message()
+            if not last_user_message:
+                st.error("No user message found")
+                return
+            
+            # Add the confirmed structure as context
+            context = f"Confirmed logical structure: {st.session_state.confirmed_structure}"
+            result = generate_rule_with_openai(last_user_message, st.session_state.client_id, context)
+            
+            if "rules" in result:
+                st.session_state.last_generated_rule = result
+                st.session_state.rule_visualization = create_rule_visualization(result)
+                
+                # Add success message to chat
+                success_msg = {
+                    "message": f"✅ Rule generated successfully based on your selected structure!",
+                    "rules_generated": True
+                }
+                st.session_state.chat_history.append({
+                    "role": "assistant", 
+                    "content": json.dumps(success_msg, indent=2)
+                })
+            else:
+                error_msg = {
+                    "message": "Failed to generate rule. Please try again with a clearer description."
+                }
+                st.session_state.chat_history.append({
+                    "role": "assistant", 
+                    "content": json.dumps(error_msg, indent=2)
+                })
+        
+        except Exception as e:
+            error_msg = {
+                "message": f"Error generating rule: {str(e)}"
+            }
+            st.session_state.chat_history.append({
+                "role": "assistant", 
+                "content": json.dumps(error_msg, indent=2)
+            })
+
+# ---------- UI Components ----------
+def display_sidebar():
+    with st.sidebar:
+        st.title("⚙️ Configuration")
+        
+        st.session_state.client_id = st.number_input(
+            "Client ID",
+            value=st.session_state.client_id,
+            min_value=1,
+            help="Enter the client ID for data source retrieval"
+        )
+        
+        st.subheader("Data Sources")
+        if st.button("🔄 Refresh Data Sources", use_container_width=True):
+            with st.spinner("Fetching data sources..."):
+                st.session_state.data_sources = fetch_data_sources(st.session_state.client_id)
+        
+        if st.session_state.data_sources:
+            st.success(f"✅ Loaded {len(st.session_state.data_sources)} data sources")
+            with st.expander("View Data Sources"):
+                for source_name, fields in st.session_state.data_sources.items():
+                    st.write(f"**{source_name}** ({len(fields)} fields)")
+                    for field in fields[:3]:
+                        st.write(f"  - {field['field']}")
+                    if len(fields) > 3:
+                        st.write(f"  ... and {len(fields) - 3} more")
+        else:
+            st.info("Click 'Refresh Data Sources' to load available data sources")
+        
+        st.subheader("Chat Management")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🗑️ Clear Chat", use_container_width=True):
+                st.session_state.chat_history = []
+                st.session_state.last_generated_rule = None
+                st.session_state.synthetic_data = None
+                st.session_state.show_synthetic_data = False
+                st.session_state.confirmed_structure = None
+                st.session_state.rule_visualization = None
+                st.session_state.awaiting_confirmation = False
+                st.session_state.logical_options = []
+                st.session_state.selected_option = None
+                st.session_state.show_structure_options = False
+                st.rerun()
+        
+        with col2:
+            if st.button("📥 Export Chat", use_container_width=True):
+                export_chat()
+
+def export_chat():
+    chat_data = {
+        "client_id": st.session_state.client_id,
+        "timestamp": datetime.now().isoformat(),
+        "chat_history": st.session_state.chat_history,
+        "last_generated_rule": st.session_state.last_generated_rule,
+        "confirmed_structure": st.session_state.confirmed_structure
+    }
+    
+    json_str = json.dumps(chat_data, indent=2)
+    
+    st.download_button(
+        label="Download Chat JSON",
+        data=json_str,
+        file_name=f"chat_history_{st.session_state.client_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+        mime="application/json"
+    )
+
+def display_structure_options():
+    """Display multiple logical structure options for user to choose"""
+    st.markdown("---")
+    st.subheader("🤔 Choose a Logical Structure")
+    st.info("Please select which logical structure matches your intent:")
+    
+    # Display each option with radio button
+    selected_index = st.radio(
+        "Select an option:",
+        range(len(st.session_state.logical_options)),
+        format_func=lambda i: st.session_state.logical_options[i]
+    )
+    
+    st.session_state.selected_option = selected_index
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("✅ Confirm Selection", use_container_width=True, type="primary"):
+            selected_structure = st.session_state.logical_options[selected_index]
+            st.session_state.confirmed_structure = selected_structure
+            st.session_state.show_structure_options = False
+            st.session_state.awaiting_confirmation = False
+            
+            # Add confirmation to chat
+            confirmation_msg = {
+                "message": f"Confirmed: {selected_structure}",
+                "selected_option": selected_index + 1
+            }
+            st.session_state.chat_history.append({
+                "role": "assistant", 
+                "content": json.dumps(confirmation_msg, indent=2)
+            })
+            
+            # Generate the rule
+            generate_confirmed_rule()
+            st.rerun()
+    
+    with col2:
+        if st.button("🔄 Suggest Other Options", use_container_width=True):
+            # Clear current options and ask for new ones
+            st.session_state.logical_options = []
+            st.session_state.selected_option = None
+            st.session_state.show_structure_options = False
+            
+            # Ask user to suggest different structure
+            suggestion_msg = {
+                "message": "Please suggest a different logical structure for your rule.",
+                "request": "suggest_different_structure"
+            }
+            st.session_state.chat_history.append({
+                "role": "assistant", 
+                "content": json.dumps(suggestion_msg, indent=2)
+            })
+            st.rerun()
+
+def display_single_structure_confirmation():
+    """Display single logical structure for confirmation"""
+    st.markdown("---")
+    st.subheader("✅ Confirm Logical Structure")
+    
+    if st.session_state.logical_options:
+        logical_structure = st.session_state.logical_options[0]
+        st.info(f"**Proposed Logical Structure:**\n\n{logical_structure}")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("✅ Yes, Generate Rule", use_container_width=True, type="primary"):
+                st.session_state.confirmed_structure = logical_structure
+                st.session_state.awaiting_confirmation = False
+                
+                # Add confirmation to chat
+                confirmation_msg = {
+                    "message": f"Confirmed: {logical_structure}",
+                    "status": "confirmed"
+                }
+                st.session_state.chat_history.append({
+                    "role": "assistant", 
+                    "content": json.dumps(confirmation_msg, indent=2)
+                })
+                
+                generate_confirmed_rule()
+                st.rerun()
+        
+        with col2:
+            if st.button("🔄 Suggest Different Structure", use_container_width=True):
+                st.session_state.awaiting_confirmation = False
+                st.session_state.logical_options = []
+                
+                # Ask for different structure
+                suggestion_msg = {
+                    "message": "Please suggest a different logical structure for your rule.",
+                    "request": "suggest_different_structure"
+                }
+                st.session_state.chat_history.append({
+                    "role": "assistant", 
+                    "content": json.dumps(suggestion_msg, indent=2)
+                })
+                st.rerun()
+
+def display_chat_history():
+    st.title("🏦 Mortgage Rule Generator")
+    st.subheader("Natural Language to Rule Conversion")
+    
+    # Display chat messages
+    chat_container = st.container()
+    
+    with chat_container:
+        for message in st.session_state.chat_history:
+            if message["role"] == "user":
+                with st.chat_message("user"):
+                    st.write(message["content"])
+            else:
+                with st.chat_message("assistant"):
+                    try:
+                        content_data = json.loads(message["content"])
+                        if "message" in content_data:
+                            st.write(content_data["message"])
+                            if "logical_structure" in content_data:
+                                st.info(f"**Logical Structure:**\n{content_data['logical_structure']}")
+                        else:
+                            st.json(content_data)
+                    except:
+                        st.write(message["content"])
+    
+    # If showing structure options
+    if st.session_state.show_structure_options and st.session_state.logical_options:
+        display_structure_options()
+        return
+    
+    # If awaiting single structure confirmation
+    if st.session_state.awaiting_confirmation and st.session_state.logical_options:
+        display_single_structure_confirmation()
+        return
+    
+    # Chat input (only show if not in confirmation mode)
+    user_input = st.chat_input("Describe your rule in natural language...")
+    
+    if user_input:
+        # Add user message to chat
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        
+        # Check if user is responding to structure request
+        last_assistant_msg = None
+        for msg in reversed(st.session_state.chat_history):
+            if msg["role"] == "assistant":
+                last_assistant_msg = msg["content"]
+                break
+        
+        if last_assistant_msg and "suggest_different_structure" in last_assistant_msg:
+            # User is suggesting a different structure
+            with st.spinner("Analyzing your suggested structure..."):
+                result = generate_rule_with_openai(user_input, st.session_state.client_id)
+                handle_ai_response(result)
+        else:
+            # New rule request
+            with st.spinner("Processing your rule request..."):
+                if len(st.session_state.data_sources) == 0:
+                    st.session_state.data_sources = fetch_data_sources(st.session_state.client_id)
+                
+                result = generate_rule_with_openai(user_input, st.session_state.client_id)
+                handle_ai_response(result)
+        
+        st.rerun()
+
+def handle_ai_response(result):
+    """Handle AI response and update session state accordingly"""
+    response_type = detect_response_type(result)
+    
+    if response_type == "rule":
+        st.session_state.last_generated_rule = result
+        st.session_state.rule_visualization = create_rule_visualization(result)
+        
+        response_content = json.dumps({
+            "message": "✅ Rule generated successfully!",
+            "rules_available": True
+        }, indent=2)
+        
+        st.session_state.chat_history.append({"role": "assistant", "content": response_content})
+    
+    elif response_type == "confirmation":
+        logical_structure = result.get("logical_structure", "")
+        user_message = result.get("user_message", "")
+        
+        # Parse the logical structure to get options
+        options = parse_logical_options(logical_structure)
+        
+        if len(options) > 1:
+            # Multiple options - show selection UI
+            st.session_state.logical_options = options
+            st.session_state.show_structure_options = True
+            
+            # Store the AI response in chat
+            ai_response = {
+                "message": "I've identified multiple possible logical structures for your rule.",
+                "logical_structure": logical_structure,
+                "user_message": "Please select which structure matches your intent."
+            }
+            st.session_state.chat_history.append({"role": "assistant", "content": json.dumps(ai_response, indent=2)})
+        
+        else:
+            # Single option - show confirmation
+            st.session_state.logical_options = options
+            st.session_state.awaiting_confirmation = True
+            
+            ai_response = {
+                "message": "I've identified a logical structure for your rule.",
+                "logical_structure": logical_structure,
+                "user_message": user_message or "Do you agree with this structure?"
+            }
+            st.session_state.chat_history.append({"role": "assistant", "content": json.dumps(ai_response, indent=2)})
+    
+    elif response_type == "general":
+        st.session_state.chat_history.append({"role": "assistant", "content": json.dumps(result, indent=2)})
+    
+    else:
+        st.session_state.chat_history.append({
+            "role": "assistant", 
+            "content": json.dumps({"message": "I'm not sure how to process that. Please try rephrasing your rule description."}, indent=2)
+        })
+
 def generate_synthetic_dataset_with_openai(rules: List[Dict[str, Any]], data_sources: Dict[str, List[Dict[str, str]]]) -> Dict[str, Any]:
     # Extract exact fields mentioned in the rules
     rule_fields = set()
@@ -605,41 +893,29 @@ def generate_synthetic_dataset_with_openai(rules: List[Dict[str, Any]], data_sou
     
     current_date = datetime.today().strftime("%Y-%m-%d")
     
-    system_prompt = f"""You are a data generator in year 2025. Generate a synthetic dataset that includes ONLY the fields referenced in the provided rule. Always assume today's date is {current_date}.
-
-    Generate 10 customer records with:
-    1. ONLY the fields mentioned in the rule (plus customer_id)
-    2. Realistic, natural-looking values appropriate for each field type
-    3. Exactly 10 records total
-    4. About half should match ALL rule conditions (matches_rule: true), half should not (matches_rule: false)
-    5. Output in exact JSON format specified
-
-    Return ONLY JSON in this exact format:
+    system_prompt = f"""Generate synthetic data for testing a rule. Include ONLY fields mentioned in the rule.
+    Today's date: {current_date}
+    
+    Generate 10 records:
+    - Include customer_id and matches_rule fields
+    - Include ONLY the rule fields: {list(rule_fields)}
+    - 5 records should match ALL conditions (matches_rule: true)
+    - 5 records should NOT match (matches_rule: false)
+    
+    Return JSON format:
     {{
       "synthetic_dataset": [
         {{
           "customer_id": "CUST001",
           "field1": "value1",
-          "field2": "value2",
           "matches_rule": true
-        }},
-        ...
+        }}
       ]
     }}
-
-    DO NOT include any other fields or metadata. ONLY the synthetic_dataset array.
     """
-
-    user_prompt = f"""
-    Generate synthetic data for this rule. Include ONLY these fields: {list(rule_fields)}
-
-    RULE CONDITIONS:
-    {json.dumps(rules, indent=2)}
-
-    Generate 10 records with realistic values. About 5 should match ALL conditions, 5 should fail at least one condition.
-    Output ONLY the JSON with synthetic_dataset array, no other text.
-    """
-
+    
+    user_prompt = f"Generate synthetic data for this rule:\n{json.dumps(rules, indent=2)}"
+    
     try:
         response = client.chat.completions.create(
             model="gpt-4o-2024-08-06",
@@ -705,237 +981,6 @@ def generate_fallback_rule_dataset(rules: List[Dict[str, Any]], rule_fields: set
     
     return dataset
 
-# ---------- UI Components ----------
-def display_sidebar():
-    with st.sidebar:
-        st.title("⚙️ Configuration")
-        
-        st.session_state.client_id = st.number_input(
-            "Client ID",
-            value=st.session_state.client_id,
-            min_value=1,
-            help="Enter the client ID for data source retrieval"
-        )
-        
-        st.subheader("Data Sources")
-        if st.button("Refresh Data Sources", use_container_width=True):
-            with st.spinner("Fetching data sources..."):
-                st.session_state.data_sources = fetch_data_sources(st.session_state.client_id)
-        
-        if st.session_state.data_sources:
-            st.success(f"Loaded {len(st.session_state.data_sources)} data sources")
-            with st.expander("View Data Sources"):
-                for source_name, fields in st.session_state.data_sources.items():
-                    st.write(f"**{source_name}** ({len(fields)} fields)")
-                    for field in fields[:3]:
-                        st.write(f"  - {field['field']} ({field['type']})")
-                    if len(fields) > 3:
-                        st.write(f"  ... and {len(fields) - 3} more")
-        else:
-            st.info("Click 'Refresh Data Sources' to load available data sources")
-        
-        st.subheader("Chat Management")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Clear Chat", use_container_width=True):
-                st.session_state.chat_history = []
-                st.session_state.last_generated_rule = None
-                st.session_state.synthetic_data = None
-                st.session_state.show_synthetic_data = False
-                st.session_state.confirmed_structure = None
-                st.session_state.rule_visualization = None
-                st.session_state.awaiting_confirmation = False
-                st.session_state.logical_options = []
-                st.rerun()
-        
-        with col2:
-            if st.button("Export Chat", use_container_width=True):
-                export_chat()
-
-def export_chat():
-    chat_data = {
-        "client_id": st.session_state.client_id,
-        "timestamp": datetime.now().isoformat(),
-        "chat_history": st.session_state.chat_history,
-        "last_generated_rule": st.session_state.last_generated_rule
-    }
-    
-    json_str = json.dumps(chat_data, indent=2)
-    
-    st.download_button(
-        label="Download Chat JSON",
-        data=json_str,
-        file_name=f"chat_history_{st.session_state.client_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-        mime="application/json"
-    )
-
-def display_confirmation_options(logical_structure: str):
-    """Display confirmation options for logical structure"""
-    st.markdown("---")
-    st.subheader("✅ Confirm Logical Structure")
-    
-    # Display the logical structure
-    st.info(f"**Proposed Logical Structure:**\n\n{logical_structure}")
-    
-    # Confirmation buttons
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("✅ Agree & Generate Rule", use_container_width=True, type="primary"):
-            st.session_state.confirmed_structure = logical_structure
-            st.session_state.awaiting_confirmation = False
-            # Generate the rule based on confirmed structure
-            generate_confirmed_rule()
-    
-    with col2:
-        if st.button("🔄 Suggest Another Structure", use_container_width=True):
-            st.session_state.awaiting_confirmation = True
-            st.rerun()
-    
-    with col3:
-        if st.button("❌ Cancel", use_container_width=True):
-            st.session_state.awaiting_confirmation = False
-            st.rerun()
-
-def generate_confirmed_rule():
-    """Generate rule after confirmation"""
-    with st.spinner("Generating rule based on confirmed structure..."):
-        try:
-            # Use the last user input to generate the rule
-            last_user_message = None
-            for msg in reversed(st.session_state.chat_history):
-                if msg["role"] == "user":
-                    last_user_message = msg["content"]
-                    break
-            
-            if last_user_message:
-                # Add confirmation context to the prompt
-                prompt_with_confirmation = f"{last_user_message}\n\nConfirmed logical structure: {st.session_state.confirmed_structure}"
-                
-                result = generate_rule_with_openai(prompt_with_confirmation, st.session_state.client_id)
-                
-                if "rules" in result:
-                    st.session_state.last_generated_rule = result
-                    st.session_state.rule_visualization = create_rule_visualization(result)
-                    
-                    # Add assistant response to chat
-                    confirmation_msg = f"Rule generated successfully based on confirmed structure: {st.session_state.confirmed_structure}"
-                    st.session_state.chat_history.append({"role": "assistant", "content": confirmation_msg})
-                else:
-                    st.error("Failed to generate rule. Please try again.")
-        
-        except Exception as e:
-            st.error(f"Error generating rule: {str(e)}")
-
-def display_chat_history():
-    st.title("🏦 Mortgage Rule Generator")
-    st.subheader("Natural Language to Rule Conversion")
-    
-    # Display chat messages
-    chat_container = st.container()
-    
-    with chat_container:
-        for message in st.session_state.chat_history:
-            if message["role"] == "user":
-                with st.chat_message("user"):
-                    st.write(message["content"])
-            else:
-                with st.chat_message("assistant"):
-                    try:
-                        content_data = json.loads(message["content"])
-                        if "message" in content_data:
-                            st.write(content_data["message"])
-                            if "logical_structure" in content_data:
-                                st.info(f"**Logical Structure:** {content_data['logical_structure']}")
-                                if "user_message" in content_data:
-                                    st.write(f"**Question:** {content_data['user_message']}")
-                        else:
-                            st.json(content_data)
-                    except:
-                        st.write(message["content"])
-    
-    # If awaiting confirmation, show the confirmation UI
-    if st.session_state.awaiting_confirmation:
-        # Get the last logical structure from chat
-        last_logical_structure = None
-        for msg in reversed(st.session_state.chat_history):
-            if msg["role"] == "assistant":
-                try:
-                    content_data = json.loads(msg["content"])
-                    if "logical_structure" in content_data:
-                        last_logical_structure = content_data["logical_structure"]
-                        break
-                except:
-                    continue
-        
-        if last_logical_structure:
-            display_confirmation_options(last_logical_structure)
-            return  # Don't show chat input while confirming
-    
-    # Chat input (only show if not awaiting confirmation)
-    user_input = st.chat_input("Describe your rule in natural language...")
-    
-    if user_input:
-        # Add user message to chat
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-        
-        # If user is responding to a confirmation request
-        if st.session_state.awaiting_confirmation:
-            # Check if user agreed
-            if user_input.lower() in ["yes", "agree", "yep", "confirm", "ok"]:
-                st.session_state.confirmed_structure = st.session_state.logical_options[0] if st.session_state.logical_options else None
-                st.session_state.awaiting_confirmation = False
-                generate_confirmed_rule()
-            elif user_input.lower() in ["no", "disagree", "nope"]:
-                st.session_state.chat_history.append({"role": "assistant", "content": "Please suggest another logical structure."})
-                st.session_state.awaiting_confirmation = False
-            st.rerun()
-            return
-        
-        # Generate response
-        with st.spinner("Processing your request..."):
-            try:
-                if len(st.session_state.data_sources) == 0:
-                    st.session_state.data_sources = fetch_data_sources(st.session_state.client_id)
-                
-                result = generate_rule_with_openai(user_input, st.session_state.client_id)
-                response_type = detect_response_type(result)
-                
-                if response_type == "rule":
-                    st.session_state.last_generated_rule = result
-                    st.session_state.rule_visualization = create_rule_visualization(result)
-                    
-                    response_content = json.dumps({
-                        "message": "Rule generated successfully!",
-                        "rules_available": True
-                    }, indent=2)
-                    
-                    st.session_state.chat_history.append({"role": "assistant", "content": response_content})
-                
-                elif response_type == "confirmation":
-                    # Store logical options and set awaiting confirmation
-                    logical_structure = result.get("logical_structure", "")
-                    st.session_state.logical_options = [logical_structure]
-                    st.session_state.awaiting_confirmation = True
-                    st.session_state.chat_history.append({"role": "assistant", "content": json.dumps(result, indent=2)})
-                
-                elif response_type == "general":
-                    st.session_state.chat_history.append({"role": "assistant", "content": json.dumps(result, indent=2)})
-                
-                else:
-                    st.session_state.chat_history.append({
-                        "role": "assistant", 
-                        "content": json.dumps({"message": "I'm not sure how to process that request. Please try rephrasing your rule description."}, indent=2)
-                    })
-                
-                st.rerun()
-                
-            except Exception as e:
-                error_message = f"Error generating rule: {str(e)}"
-                st.session_state.chat_history.append({"role": "assistant", "content": error_message})
-                st.error(error_message)
-                st.rerun()
-
 def display_synthetic_data():
     if st.session_state.synthetic_data and st.session_state.show_synthetic_data:
         with st.expander("📊 Synthetic Data Preview", expanded=True):
@@ -963,7 +1008,7 @@ def display_synthetic_data():
             )
 
 def main():
-    # Custom CSS for better styling
+    # Custom CSS
     st.markdown("""
     <style>
     .stChatMessage {
@@ -977,16 +1022,9 @@ def main():
     .stChatMessage[data-testid="assistant"] {
         background-color: #e6f7ff;
     }
-    .condition-group {
-        border-left: 3px solid #4CAF50;
-        padding-left: 1rem;
-        margin: 1rem 0;
-    }
-    .condition-item {
-        background-color: #f8f9fa;
-        padding: 0.5rem;
-        border-radius: 0.25rem;
-        margin: 0.25rem 0;
+    div[data-testid="stExpander"] div[role="button"] p {
+        font-size: 1.1rem;
+        font-weight: 600;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -1001,11 +1039,11 @@ def main():
         display_chat_history()
     
     with col2:
-        st.info("💡 **Tips for best results:**\n\n"
+        st.info("💡 **Tips:**\n\n"
                 "1. Be specific with conditions\n"
-                "2. Mention field names when possible\n"
-                "3. Use clear AND/OR logic\n"
-                "4. Example: 'Customers who spent over $1000 AND have an active mortgage'")
+                "2. Mention AND/OR logic clearly\n"
+                "3. Example: 'Customers who spent >$1000 AND have active mortgage'\n"
+                "4. You'll get to confirm the structure before rule generation")
     
     # Display rule visualization if available
     if st.session_state.rule_visualization and st.session_state.last_generated_rule:
@@ -1013,9 +1051,9 @@ def main():
         
         # Show synthetic data generation button
         if not st.session_state.show_synthetic_data:
-            col1, col2, col3 = st.columns(3)
-            with col2:
-                if st.button("📊 Generate Sample Data", use_container_width=True, type="secondary"):
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("📊 Generate Sample Data", use_container_width=True, type="secondary", key="gen_sample"):
                     with st.spinner("Generating synthetic data..."):
                         data_sources = fetch_data_sources(st.session_state.client_id)
                         synthetic_data = generate_synthetic_dataset_with_openai(
