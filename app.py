@@ -1786,176 +1786,176 @@ def generate_rule_with_openai(user_input: str, client_id: Optional[int] = None):
     
     system_prompt = f"""You are a rule generation assistant for mortgage rules.
 
-    ### CONNECTOR RULES (CRITICAL):
-    1. **Top-level rules array**: Items in the "rules" array can be conditions OR condition groups
-    2. **Between top-level items**: Use "connector" field to connect to the next item
-       - First item: Add "connector" if there's another item after it
-       - Last item: NO "connector" field
-    3. **Inside condition groups**: Use "groupConnector" field for the group
-       - If group has "AND" between conditions, set "groupConnector": "AND"
-       - If group has "OR" between conditions, set "groupConnector": "OR"
-    4. **Between conditions inside groups**: 
-       - First condition in group: Add "connector" field with group's connector value
-       - Last condition in group: NO "connector" field
-
-    ### LOGICAL STRUCTURE EXAMPLES:
-
-    EXAMPLE 1: A AND (B OR C)
-    Structure: First condition (A) connected with AND to a group containing (B OR C)
-    
-    JSON Structure:
-    {{
-        "rules": [
+            ### CONNECTOR RULES (CRITICAL):
+            1. **Top-level rules array**: Items in the "rules" array can be conditions OR condition groups
+            2. **Between top-level items**: Use "connector" field to connect to the next item
+               - First item: Add "connector" if there's another item after it
+               - Last item: NO "connector" field
+            3. **Inside condition groups**: Use "groupConnector" field for the group
+               - If group has "AND" between conditions, set "groupConnector": "AND"
+               - If group has "OR" between conditions, set "groupConnector": "OR"
+            4. **Between conditions inside groups**: 
+               - First condition in group: Add "connector" field with group's connector value
+               - Last condition in group: NO "connector" field
+        
+            ### LOGICAL STRUCTURE EXAMPLES:
+        
+            EXAMPLE 1: A AND (B OR C)
+            Structure: First condition (A) connected with AND to a group containing (B OR C)
+            
+            JSON Structure:
             {{
-                "id": "1",
-                "ruleType": "condition",
-                "dataSource": "source_name",
-                "dataSourceId": "source_id",
-                "field": "field_A",
-                "fieldId": "field_A_id",
-                "eligibilityPeriod": "n_a",
-                "function": "n_a",
-                "operator": "equal",
-                "value": "value_A",
-                "connector": "AND"  // Connects to next item (the group)
-            }},
-            {{
-                "id": "2",
-                "ruleType": "conditionGroup",
-                "groupConnector": "OR",  // Inside group, conditions are connected with OR
-                "conditions": [
+                "rules": [
                     {{
-                        "id": "2a",
+                        "id": "1",
                         "ruleType": "condition",
                         "dataSource": "source_name",
                         "dataSourceId": "source_id",
-                        "field": "field_B",
-                        "fieldId": "field_B_id",
-                        "operator": "greater_than",
-                        "value": "30000",
-                        "connector": "OR"  // Connects to next condition in group
+                        "field": "field_A",
+                        "fieldId": "field_A_id",
+                        "eligibilityPeriod": "n_a",
+                        "function": "n_a",
+                        "operator": "equal",
+                        "value": "value_A",
+                        "connector": "AND"  // Connects to next item (the group)
                     }},
                     {{
-                        "id": "2b",
-                        "ruleType": "condition",
-                        "dataSource": "source_name",
-                        "dataSourceId": "source_id",
-                        "field": "field_C",
-                        "fieldId": "field_C_id",
-                        "operator": "equal",
-                        "value": "active"
-                        // NO connector - last in group
+                        "id": "2",
+                        "ruleType": "conditionGroup",
+                        "groupConnector": "OR",  // Inside group, conditions are connected with OR
+                        "conditions": [
+                            {{
+                                "id": "2a",
+                                "ruleType": "condition",
+                                "dataSource": "source_name",
+                                "dataSourceId": "source_id",
+                                "field": "field_B",
+                                "fieldId": "field_B_id",
+                                "operator": "greater_than",
+                                "value": "30000",
+                                "connector": "OR"  // Connects to next condition in group
+                            }},
+                            {{
+                                "id": "2b",
+                                "ruleType": "condition",
+                                "dataSource": "source_name",
+                                "dataSourceId": "source_id",
+                                "field": "field_C",
+                                "fieldId": "field_C_id",
+                                "operator": "equal",
+                                "value": "active"
+                                // NO connector - last in group
+                            }}
+                        ]
+                        // NO connector - last top-level item
                     }}
-                ]
-                // NO connector - last top-level item
+                ],
+                "topLevelConnector": "AND"
             }}
-        ],
-        "topLevelConnector": "AND"
-    }}
-
-    EXAMPLE 2: (A AND B) OR C
-    Structure: Group containing (A AND B) connected with OR to condition C
-    
-    JSON Structure:
-    {{
-        "rules": [
+        
+            EXAMPLE 2: (A AND B) OR C
+            Structure: Group containing (A AND B) connected with OR to condition C
+            
+            JSON Structure:
             {{
-                "id": "1",
-                "ruleType": "conditionGroup",
-                "groupConnector": "AND",  // Inside group, conditions are connected with AND
-                "conditions": [
+                "rules": [
                     {{
-                        "id": "1a",
+                        "id": "1",
+                        "ruleType": "conditionGroup",
+                        "groupConnector": "AND",  // Inside group, conditions are connected with AND
+                        "conditions": [
+                            {{
+                                "id": "1a",
+                                "ruleType": "condition",
+                                "field": "field_A",
+                                "operator": "equal",
+                                "value": "value_A",
+                                "connector": "AND"  // Connects to next condition in group
+                            }},
+                            {{
+                                "id": "1b",
+                                "ruleType": "condition",
+                                "field": "field_B",
+                                "operator": "equal",
+                                "value": "value_B"
+                                // NO connector - last in group
+                            }}
+                        ],
+                        "connector": "OR"  // Connects to next top-level item
+                    }},
+                    {{
+                        "id": "2",
+                        "ruleType": "condition",
+                        "field": "field_C",
+                        "operator": "equal",
+                        "value": "value_C"
+                        // NO connector - last top-level item
+                    }}
+                ],
+                "topLevelConnector": "OR"
+            }}
+        
+            EXAMPLE 3: A AND B AND C (simple AND)
+            JSON Structure:
+            {{
+                "rules": [
+                    {{
+                        "id": "1",
                         "ruleType": "condition",
                         "field": "field_A",
                         "operator": "equal",
                         "value": "value_A",
-                        "connector": "AND"  // Connects to next condition in group
+                        "connector": "AND"
                     }},
                     {{
-                        "id": "1b",
+                        "id": "2",
                         "ruleType": "condition",
                         "field": "field_B",
                         "operator": "equal",
-                        "value": "value_B"
-                        // NO connector - last in group
+                        "value": "value_B",
+                        "connector": "AND"
+                    }},
+                    {{
+                        "id": "3",
+                        "ruleType": "condition",
+                        "field": "field_C",
+                        "operator": "equal",
+                        "value": "value_C"
+                        // NO connector - last item
                     }}
                 ],
-                "connector": "OR"  // Connects to next top-level item
-            }},
-            {{
-                "id": "2",
-                "ruleType": "condition",
-                "field": "field_C",
-                "operator": "equal",
-                "value": "value_C"
-                // NO connector - last top-level item
+                "topLevelConnector": "AND"
             }}
-        ],
-        "topLevelConnector": "OR"
-    }}
-
-    EXAMPLE 3: A AND B AND C (simple AND)
-    JSON Structure:
-    {{
-        "rules": [
-            {{
-                "id": "1",
-                "ruleType": "condition",
-                "field": "field_A",
-                "operator": "equal",
-                "value": "value_A",
-                "connector": "AND"
-            }},
-            {{
-                "id": "2",
-                "ruleType": "condition",
-                "field": "field_B",
-                "operator": "equal",
-                "value": "value_B",
-                "connector": "AND"
-            }},
-            {{
-                "id": "3",
-                "ruleType": "condition",
-                "field": "field_C",
-                "operator": "equal",
-                "value": "value_C"
-                // NO connector - last item
-            }}
-        ],
-        "topLevelConnector": "AND"
-    }}
-
-    ### YOUR TASK:
-    1. Analyze the user's request and confirmed structure
-    2. Determine the correct logical grouping
-    3. Generate JSON with proper connector fields
-    4. Use only available data sources and field mappings
-
-    Available data sources:
-    {available_data}
-
-    Field Mapping:
-    {field_mapping_str}
-
-    Today's date: {current_date}
-    {structure_context}
-
-    ### ADDITIONAL RULES:
-    1. Use ONLY the exact column names from available data sources
-    2. Use fieldId from the field mapping above
-    3. Use dataSourceId from the available data sources
-    4. Use operator VALUES: "equal", "greater_than", "less_than", "contains", etc.
-    5. Use function VALUES: "n_a", "sum", "count", "average", "max", "min"
-    6. For eligibilityPeriod:
-       - Date range mentioned: "n_a"
-       - "last month": "Last 30 days"
-       - "every month": "Rolling 30 days"
-    7. For amount aggregations: use "sum" function
-
-    Respond ONLY with the JSON output. No explanations.
-    """
+        
+            ### YOUR TASK:
+            1. Analyze the user's request and confirmed structure
+            2. Determine the correct logical grouping
+            3. Generate JSON with proper connector fields
+            4. Use only available data sources and field mappings
+        
+            Available data sources:
+            {available_data}
+        
+            Field Mapping:
+            {field_mapping_str}
+        
+            Today's date: {current_date}
+            {structure_context}
+        
+            ### ADDITIONAL RULES:
+            1. Use ONLY the exact column names from available data sources
+            2. Use fieldId from the field mapping above
+            3. Use dataSourceId from the available data sources
+            4. Use operator VALUES: "equal", "greater_than", "less_than", "contains", etc.
+            5. Use function VALUES: "n_a", "sum", "count", "average", "max", "min"
+            6. For eligibilityPeriod:
+               - Date range mentioned: "n_a"
+               - "last month": "Last 30 days"
+               - "every month": "Rolling 30 days"
+            7. For amount aggregations: use "sum" function
+        
+            Respond ONLY with the JSON output. No explanations.
+            """
     
     try:
         messages = [
