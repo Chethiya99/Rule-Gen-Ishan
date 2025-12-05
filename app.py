@@ -1419,6 +1419,7 @@ def extract_last_user_message():
     return None
 
 # ---------- Visualization Functions ----------
+# Update the create_rule_visualization function to ensure unique IDs
 def create_rule_visualization(rules_data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a structured visualization of the rule for display"""
     
@@ -1426,11 +1427,15 @@ def create_rule_visualization(rules_data: Dict[str, Any]) -> Dict[str, Any]:
         """Recursively process rule items for visualization"""
         item_type = rule_item.get("ruleType", "condition")
         
+        # Ensure unique ID
+        if "id" not in rule_item:
+            rule_item["id"] = str(uuid.uuid4())
+        
         if item_type == "conditionGroup":
             # Process condition group
             group_data = {
                 "type": "group",
-                "id": rule_item.get("id", str(uuid.uuid4())),
+                "id": rule_item["id"],
                 "group_connector": rule_item.get("groupConnector", "AND"),
                 "conditions": [],
                 "connector": rule_item.get("connector"),
@@ -1447,7 +1452,7 @@ def create_rule_visualization(rules_data: Dict[str, Any]) -> Dict[str, Any]:
         else:  # Individual condition
             return {
                 "type": "condition",
-                "id": rule_item.get("id", str(uuid.uuid4())),
+                "id": rule_item["id"],
                 "dataSource": rule_item.get("dataSource", "Unknown"),
                 "dataSourceId": rule_item.get("dataSourceId", "N/A"),
                 "field": rule_item.get("field", "Unknown"),
@@ -1467,13 +1472,13 @@ def create_rule_visualization(rules_data: Dict[str, Any]) -> Dict[str, Any]:
         "logical_structure": st.session_state.confirmed_structure or ""
     }
     
-    for rule in rules_data.get("rules", []):
+    for i, rule in enumerate(rules_data.get("rules", [])):
         processed_rule = process_rule_item(rule)
         visualization["rules"].append(processed_rule)
     
     return visualization
 
-def display_condition(condition_data: Dict[str, Any], container):
+def display_condition(condition_data: Dict[str, Any], container, unique_key: str):
     """Display a single condition in the UI"""
     with container:
         cols = st.columns([2, 2, 1, 1, 2])
@@ -1482,7 +1487,7 @@ def display_condition(condition_data: Dict[str, Any], container):
             st.selectbox(
                 "Data Source",
                 [condition_data["dataSource"]],
-                key=f"ds_{condition_data['id']}",
+                key=f"ds_{unique_key}",
                 disabled=True,
                 label_visibility="collapsed"
             )
@@ -1491,7 +1496,7 @@ def display_condition(condition_data: Dict[str, Any], container):
             st.selectbox(
                 "Field",
                 [condition_data["field"]],
-                key=f"field_{condition_data['id']}",
+                key=f"field_{unique_key}",
                 disabled=True,
                 label_visibility="collapsed"
             )
@@ -1501,7 +1506,7 @@ def display_condition(condition_data: Dict[str, Any], container):
             st.text_input(
                 "Period",
                 value=period_value,
-                key=f"period_{condition_data['id']}",
+                key=f"period_{unique_key}",
                 disabled=True,
                 label_visibility="collapsed"
             )
@@ -1519,7 +1524,7 @@ def display_condition(condition_data: Dict[str, Any], container):
             st.text_input(
                 "Function",
                 value=func_display,
-                key=f"func_{condition_data['id']}",
+                key=f"func_{unique_key}",
                 disabled=True,
                 label_visibility="collapsed"
             )
@@ -1540,7 +1545,7 @@ def display_condition(condition_data: Dict[str, Any], container):
                 st.text_input(
                     "Operator",
                     value=op_display,
-                    key=f"op_{condition_data['id']}",
+                    key=f"op_{unique_key}",
                     disabled=True,
                     label_visibility="collapsed"
                 )
@@ -1548,23 +1553,28 @@ def display_condition(condition_data: Dict[str, Any], container):
                 st.text_input(
                     "Value",
                     value=str(condition_data["value"]),
-                    key=f"val_{condition_data['id']}",
+                    key=f"val_{unique_key}",
                     disabled=True,
                     label_visibility="collapsed"
                 )
 
-def display_condition_group(group_data: Dict[str, Any], container, level=0):
+def display_condition_group(group_data: Dict[str, Any], container, level=0, parent_key=""):
     """Display a condition group in the UI"""
     with container:
         indent = "  " * level
+        group_id = group_data.get("id", str(uuid.uuid4()))
+        group_key = f"{parent_key}_group_{group_id}"
         group_title = f"{indent}Condition Group ({group_data['group_connector']})"
         
         with st.expander(group_title, expanded=True):
             for i, condition in enumerate(group_data["conditions"]):
+                condition_id = condition.get("id", str(uuid.uuid4()))
+                condition_key = f"{group_key}_cond_{condition_id}_{i}"
+                
                 if condition["type"] == "group":
-                    display_condition_group(condition, st.container(), level + 1)
+                    display_condition_group(condition, st.container(), level + 1, group_key)
                 else:
-                    display_condition(condition, st.container())
+                    display_condition(condition, st.container(), condition_key)
                 
                 if i < len(group_data["conditions"]) - 1:
                     st.markdown(f"<div style='margin-left: {20 * (level + 1)}px; color: #666;'><i>{group_data['group_connector']}</i></div>", 
@@ -1583,10 +1593,12 @@ def display_rule_visualization(visualization_data: Dict[str, Any]):
     
     # Display top-level rules
     for i, rule in enumerate(visualization_data["rules"]):
+        rule_id = rule.get("id", str(uuid.uuid4()))
+        
         if rule["type"] == "group":
-            display_condition_group(rule, st.container())
+            display_condition_group(rule, st.container(), parent_key=f"rule_{i}_{rule_id}")
         else:
-            display_condition(rule, st.container())
+            display_condition(rule, st.container(), f"rule_{i}_{rule_id}_cond")
         
         if i < len(visualization_data["rules"]) - 1:
             connector = visualization_data.get("topLevelConnector", "AND")
@@ -2117,7 +2129,7 @@ def generate_confirmed_rule():
             Generate a complete rule JSON that implements this logical structure.
             Use appropriate fields from available data sources.
             Include fieldId and dataSourceId for each field.
-            """
+"""
             
             result = generate_rule_with_openai(enhanced_prompt, st.session_state.client_id)
             
