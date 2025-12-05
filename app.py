@@ -1380,14 +1380,12 @@ def parse_logical_options(logical_structure: str) -> List[str]:
         pattern = r'Option \d+:'
         parts = re.split(pattern, logical_structure)
         
-        for i, part in enumerate(parts[1:], 1):  # Skip first empty part
+        for i, part in enumerate(parts[1:], 1):
             option_text = f"Option {i}: {part.strip()}"
-            # Clean up the option text
             option_text = option_text.replace('\\n', ' ').replace('\n', ' ').strip()
-            # Remove any trailing questions or instructions
             option_text = re.sub(r'\s*(Do you agree with any of this structure.*)', '', option_text)
             option_text = re.sub(r'\s*(Please select.*)', '', option_text)
-            if option_text and len(option_text) > 10:  # Ensure it's not empty
+            if option_text and len(option_text) > 10:
                 options.append(option_text)
     
     # If not in Option X format, check for numbered options
@@ -1409,7 +1407,9 @@ def parse_logical_options(logical_structure: str) -> List[str]:
         if clean_structure:
             options = [clean_structure]
     
-    return cleaned_options if cleaned_options else [logical_structure]
+    # Return options, or if empty, return the original structure
+    return options if options else [logical_structure]
+
 
 def extract_last_user_message():
     """Extract the last user message from chat history"""
